@@ -3,41 +3,170 @@
 Run:
     streamlit run streamlit_app.py
 """
+import math
+import sys
 import time
+import types
 from typing import Optional
 
 import av  # pyright: ignore[reportMissingImports]
-import cv2
+import numpy as np
 import streamlit as st
+from PIL import Image, ImageDraw
 from streamlit_webrtc import VideoProcessorBase, webrtc_streamer  # pyright: ignore[reportMissingImports]
 
-from main import (
-    LEFT_EYE_IDX,
-    LEFT_EAR_IDX,
-    RIGHT_EYE_IDX,
-    RIGHT_EAR_IDX,
-    STATUS_ALERT,
-    STATUS_OK,
-    check_alert,
-    compute_live_blink_rate_per_min,
-    detect_blink,
-    draw_eye_landmarks,
-    get_eye_width,
-    get_face_center_and_width,
-    has_required_landmarks,
-    mp_face_mesh,
-    update_blink_rate,
-    calculate_ear,
-    MIN_FACE_WIDTH_PX,
-    FACE_MOVE_THRESHOLD_RATIO,
-    MIN_EYE_WIDTH_PX,
-    MAX_EYE_WIDTH_CHANGE_RATIO,
-    EAR_THRESHOLD,
-    MIN_DYNAMIC_EAR_THRESHOLD,
-    EAR_BASELINE_ALPHA,
-    EAR_DYNAMIC_RATIO,
-    MAX_SKIP_FRAMES_FOR_BLINK_HOLD,
-)
+# Keep MediaPipe import path lightweight in constrained deploy environments.
+if "mediapipe.tasks.python" not in sys.modules:
+    _mp_tasks = types.ModuleType("mediapipe.tasks")
+    _mp_tasks_py = types.ModuleType("mediapipe.tasks.python")
+    setattr(_mp_tasks, "python", _mp_tasks_py)
+    sys.modules["mediapipe.tasks"] = _mp_tasks
+    sys.modules["mediapipe.tasks.python"] = _mp_tasks_py
+
+from mediapipe.python.solutions import face_mesh as mp_face_mesh
+
+EAR_THRESHOLD = 0.21
+CLOSED_FRAMES_REQUIRED = 2
+BLINK_COOLDOWN_SEC = 0.25
+MIN_DYNAMIC_EAR_THRESHOLD = 0.19
+EAR_BASELINE_ALPHA = 0.08
+EAR_DYNAMIC_RATIO = 0.85
+EAR_CLOSE_RATIO = 0.98
+EAR_OPEN_RATIO = 1.05
+MAX_SKIP_FRAMES_FOR_BLINK_HOLD = 2
+
+RATE_WINDOW_SEC = 60.0
+LOW_BLINK_THRESHOLD_PER_MIN = 12.0
+LOW_BLINK_PERSIST_SEC = 30.0
+ALERT_COOLDOWN_SEC = 60.0
+
+MIN_FACE_WIDTH_PX = 80
+FACE_MOVE_THRESHOLD_RATIO = 0.35
+MIN_EYE_WIDTH_PX = 12
+MAX_EYE_WIDTH_CHANGE_RATIO = 0.55
+
+STATUS_OK = "Blink rate normal"
+STATUS_ALERT = "LOW BLINK RATE - TAKE A BREAK"
+
+LEFT_EYE_IDX = [
+    33, 7, 163, 144, 145, 153, 154, 155,
+    133, 173, 157, 158, 159, 160, 161, 246,
+]
+RIGHT_EYE_IDX = [
+    362, 382, 381, 380, 374, 373, 390, 249,
+    263, 466, 388, 387, 386, 385, 384, 398,
+]
+LEFT_EAR_IDX = [33, 160, 158, 133, 153, 144]
+RIGHT_EAR_IDX = [362, 385, 387, 263, 373, 380]
+MAX_REQUIRED_IDX = max(max(LEFT_EYE_IDX), max(RIGHT_EYE_IDX), max(LEFT_EAR_IDX), max(RIGHT_EAR_IDX))
+
+
+def get_point(face_landmarks, idx: int, w: int, h: int) -> tuple[int, int]:
+    lm = face_landmarks.landmark[idx]
+    return int(lm.x * w), int(lm.y * h)
+
+
+def draw_eye_landmarks(draw: ImageDraw.ImageDraw, face_landmarks, eye_indices, w: int, h: int):
+    for idx in eye_indices:
+        x, y = get_point(face_landmarks, idx, w, h)
+        draw.ellipse((x - 1, y - 1, x + 1, y + 1), fill=(0, 255, 0))
+
+
+def calculate_ear(face_landmarks, ear_indices, w: int, h: int) -> float:
+    p = [get_point(face_landmarks, ear_indices[i], w, h) for i in range(6)]
+    horiz = math.hypot(p[0][0] - p[3][0], p[0][1] - p[3][1])
+    if horiz == 0:
+        return 0.0
+    v1 = math.hypot(p[1][0] - p[5][0], p[1][1] - p[5][1])
+    v2 = math.hypot(p[2][0] - p[4][0], p[2][1] - p[4][1])
+    return (v1 + v2) / (2.0 * horiz)
+
+
+def get_eye_width(face_landmarks, ear_indices, w: int, h: int) -> float:
+    p1 = get_point(face_landmarks, ear_indices[0], w, h)
+    p4 = get_point(face_landmarks, ear_indices[3], w, h)
+    return math.hypot(p1[0] - p4[0], p1[1] - p4[1])
+
+
+def get_face_center_and_width(face_landmarks, w: int) -> tuple[float, float]:
+    xs = [int(lm.x * w) for lm in face_landmarks.landmark]
+    if not xs:
+        return 0.0, 0.0
+    left, right = min(xs), max(xs)
+    return (left + right) / 2.0, float(right - left)
+
+
+def has_required_landmarks(face_landmarks) -> bool:
+    return len(face_landmarks.landmark) > MAX_REQUIRED_IDX
+
+
+def detect_blink(avg_ear: float, blink_threshold: float, eyes_visible: bool, now: float, state):
+    if not eyes_visible:
+        state["eye_closed"] = False
+        state["closed_frame_count"] = 0
+        return False, "OPEN"
+
+    close_threshold = blink_threshold * EAR_CLOSE_RATIO
+    open_threshold = blink_threshold * EAR_OPEN_RATIO
+
+    if avg_ear < close_threshold:
+        state["closed_frame_count"] += 1
+        if state["closed_frame_count"] >= CLOSED_FRAMES_REQUIRED:
+            state["eye_closed"] = True
+        return False, "CLOSED" if state["eye_closed"] else "OPEN"
+
+    blink_counted = False
+    if state["eye_closed"] and avg_ear > open_threshold:
+        if (now - state["last_blink_time"]) >= BLINK_COOLDOWN_SEC:
+            blink_counted = True
+            state["last_blink_time"] = now
+        state["eye_closed"] = False
+        state["closed_frame_count"] = 0
+    elif not state["eye_closed"]:
+        state["closed_frame_count"] = 0
+    return blink_counted, "OPEN"
+
+
+def update_blink_rate(now: float, rate_state):
+    while now - rate_state["window_start_time"] >= RATE_WINDOW_SEC:
+        rate_state["last_window_rate"] = (rate_state["blink_count_window"] * 60.0) / RATE_WINDOW_SEC
+        rate_state["rate_history"].append(rate_state["last_window_rate"])
+        rate_state["blink_count_window"] = 0
+        rate_state["window_start_time"] += RATE_WINDOW_SEC
+
+
+def compute_live_blink_rate_per_min(now: float, rate_state) -> float:
+    elapsed = now - rate_state["window_start_time"]
+    if elapsed <= 1e-6:
+        return rate_state["last_window_rate"]
+    return (rate_state["blink_count_window"] * 60.0) / elapsed
+
+
+def check_alert(current_time: float, blink_rate_per_min: float, alert_state):
+    if blink_rate_per_min < LOW_BLINK_THRESHOLD_PER_MIN:
+        if alert_state["low_start_time"] is None:
+            alert_state["low_start_time"] = current_time
+    else:
+        alert_state["low_start_time"] = None
+
+    low_duration_sec = 0.0
+    if alert_state["low_start_time"] is not None:
+        low_duration_sec = current_time - alert_state["low_start_time"]
+
+    sustained_low = low_duration_sec >= LOW_BLINK_PERSIST_SEC
+    cooldown_remaining = 0.0
+    if alert_state["last_alert_time"] is not None:
+        cooldown_remaining = max(0.0, ALERT_COOLDOWN_SEC - (current_time - alert_state["last_alert_time"]))
+
+    should_beep = False
+    if sustained_low and cooldown_remaining <= 0.0:
+        should_beep = True
+        alert_state["last_alert_time"] = current_time
+        cooldown_remaining = ALERT_COOLDOWN_SEC
+
+    if sustained_low:
+        return STATUS_ALERT, should_beep, cooldown_remaining, low_duration_sec
+    return STATUS_OK, False, cooldown_remaining, low_duration_sec
 
 
 class BlinkProcessor(VideoProcessorBase):
@@ -72,7 +201,7 @@ class BlinkProcessor(VideoProcessorBase):
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
-        img = cv2.flip(img, 1)
+        img = np.ascontiguousarray(img[:, ::-1, :])
         h, w = img.shape[:2]
         now = time.time()
 
@@ -80,17 +209,20 @@ class BlinkProcessor(VideoProcessorBase):
         live_blink_rate = compute_live_blink_rate_per_min(now, self.rate_state)
         last_window_rate = self.rate_state["last_window_rate"]
 
-        results = self.face_mesh.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        results = self.face_mesh.process(img[:, :, ::-1])
         face_list = getattr(results, "multi_face_landmarks", None)
 
         frame_ignored = False
         eyes_visible = False
 
+        pil = Image.fromarray(img[:, :, ::-1])
+        draw = ImageDraw.Draw(pil)
+
         if face_list:
             face_landmarks = face_list[0]
             if has_required_landmarks(face_landmarks):
-                draw_eye_landmarks(img, face_landmarks, LEFT_EYE_IDX)
-                draw_eye_landmarks(img, face_landmarks, RIGHT_EYE_IDX)
+                draw_eye_landmarks(draw, face_landmarks, LEFT_EYE_IDX, w, h)
+                draw_eye_landmarks(draw, face_landmarks, RIGHT_EYE_IDX, w, h)
 
                 self.avg_ear = (
                     calculate_ear(face_landmarks, LEFT_EAR_IDX, w, h)
@@ -188,11 +320,12 @@ class BlinkProcessor(VideoProcessorBase):
         ]
         y = 30
         for t in lines:
-            cv2.putText(img, t, (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            draw.text((15, y), t, fill=(255, 255, 0))
             y += 26
-        cv2.putText(img, status_text + suffix, (15, y + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.65, status_color, 2)
+        draw.text((15, y + 6), status_text + suffix, fill=(255, 80, 80) if status_text == STATUS_ALERT else (80, 255, 80))
 
-        img = cv2.resize(img, (960, 540), interpolation=cv2.INTER_AREA)
+        pil = pil.resize((960, 540))
+        img = np.array(pil)[:, :, ::-1]
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 
