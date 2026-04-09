@@ -6,10 +6,10 @@ Run:
 import time
 from typing import Optional
 
-import av
+import av  # pyright: ignore[reportMissingImports]
 import cv2
 import streamlit as st
-from streamlit_webrtc import VideoProcessorBase, webrtc_streamer
+from streamlit_webrtc import VideoProcessorBase, webrtc_streamer  # pyright: ignore[reportMissingImports]
 
 from main import (
     LEFT_EYE_IDX,
@@ -36,6 +36,7 @@ from main import (
     MIN_DYNAMIC_EAR_THRESHOLD,
     EAR_BASELINE_ALPHA,
     EAR_DYNAMIC_RATIO,
+    MAX_SKIP_FRAMES_FOR_BLINK_HOLD,
 )
 
 
@@ -53,6 +54,7 @@ class BlinkProcessor(VideoProcessorBase):
             "closed_frame_count": 0,
             "last_blink_time": 0.0,
             "ear_baseline": None,
+            "skip_frame_streak": 0,
         }
         self.rate_state = {
             "window_start_time": time.time(),
@@ -144,11 +146,13 @@ class BlinkProcessor(VideoProcessorBase):
                     + EAR_BASELINE_ALPHA * self.avg_ear
                 )
             blink_threshold = max(
+                EAR_THRESHOLD,
                 MIN_DYNAMIC_EAR_THRESHOLD,
                 self.blink_state["ear_baseline"] * EAR_DYNAMIC_RATIO,
             )
 
         if not frame_ignored:
+            self.blink_state["skip_frame_streak"] = 0
             blink_counted, self.eye_state_text = detect_blink(
                 self.avg_ear,
                 blink_threshold,
@@ -160,9 +164,11 @@ class BlinkProcessor(VideoProcessorBase):
                 self.total_blinks += 1
                 self.rate_state["blink_count_window"] += 1
         else:
-            self.blink_state["eye_closed"] = False
-            self.blink_state["closed_frame_count"] = 0
-            self.eye_state_text = "OPEN"
+            self.blink_state["skip_frame_streak"] += 1
+            if self.blink_state["skip_frame_streak"] > MAX_SKIP_FRAMES_FOR_BLINK_HOLD:
+                self.blink_state["eye_closed"] = False
+                self.blink_state["closed_frame_count"] = 0
+                self.eye_state_text = "OPEN"
 
         status_text, _, cd_rem, low_dur = check_alert(now, live_blink_rate, self.alert_state)
         status_color = (0, 0, 255) if status_text == STATUS_ALERT else (0, 255, 0)
@@ -186,13 +192,22 @@ class BlinkProcessor(VideoProcessorBase):
             y += 26
         cv2.putText(img, status_text + suffix, (15, y + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.65, status_color, 2)
 
+        img = cv2.resize(img, (960, 540), interpolation=cv2.INTER_AREA)
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 
-st.set_page_config(page_title="Blink Rate Eye Strain Monitor", layout="wide")
+st.set_page_config(page_title="Blink Rate Eye Strain Monitor", layout="centered")
 st.title("Blink Rate Eye Strain Monitor")
 st.caption("Real-time blink detection with EAR + MediaPipe Face Mesh")
 st.info("Allow webcam access. Blink naturally and keep face centered for best tracking.")
+st.markdown(
+    """
+<style>
+    .block-container {max-width: 1000px; padding-top: 1rem; padding-bottom: 1rem;}
+</style>
+""",
+    unsafe_allow_html=True,
+)
 
 webrtc_streamer(
     key="blink-monitor",

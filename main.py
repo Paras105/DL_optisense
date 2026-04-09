@@ -30,11 +30,14 @@ from mediapipe.python.solutions import face_mesh as mp_face_mesh
 # Tunable config (easy edit)
 # -------------------------
 EAR_THRESHOLD = 0.21
-CLOSED_FRAMES_REQUIRED = 3
+CLOSED_FRAMES_REQUIRED = 2
 BLINK_COOLDOWN_SEC = 0.25
-MIN_DYNAMIC_EAR_THRESHOLD = 0.18
+MIN_DYNAMIC_EAR_THRESHOLD = 0.19
 EAR_BASELINE_ALPHA = 0.08
-EAR_DYNAMIC_RATIO = 0.75
+EAR_DYNAMIC_RATIO = 0.85
+EAR_CLOSE_RATIO = 0.98
+EAR_OPEN_RATIO = 1.05
+MAX_SKIP_FRAMES_FOR_BLINK_HOLD = 2
 
 # Change this one variable if you want 15 minutes etc.
 RATE_WINDOW_SEC = 60.0
@@ -42,8 +45,8 @@ LOW_BLINK_THRESHOLD_PER_MIN = 12.0
 LOW_BLINK_PERSIST_SEC = 30.0
 ALERT_COOLDOWN_SEC = 60.0
 
-MIN_FACE_WIDTH_PX = 120
-FACE_MOVE_THRESHOLD_RATIO = 0.20
+MIN_FACE_WIDTH_PX = 80
+FACE_MOVE_THRESHOLD_RATIO = 0.35
 MIN_EYE_WIDTH_PX = 12
 MAX_EYE_WIDTH_CHANGE_RATIO = 0.55
 
@@ -127,7 +130,10 @@ def detect_blink(avg_ear, blink_threshold, eyes_visible, now, state):
         state["closed_frame_count"] = 0
         return False, "OPEN"
 
-    if avg_ear < blink_threshold:
+    close_threshold = blink_threshold * EAR_CLOSE_RATIO
+    open_threshold = blink_threshold * EAR_OPEN_RATIO
+
+    if avg_ear < close_threshold:
         state["closed_frame_count"] += 1
         if state["closed_frame_count"] >= CLOSED_FRAMES_REQUIRED:
             state["eye_closed"] = True
@@ -135,12 +141,14 @@ def detect_blink(avg_ear, blink_threshold, eyes_visible, now, state):
 
     # EAR back above threshold => possible blink transition
     blink_counted = False
-    if state["eye_closed"]:
+    if state["eye_closed"] and avg_ear > open_threshold:
         if (now - state["last_blink_time"]) >= BLINK_COOLDOWN_SEC:
             blink_counted = True
             state["last_blink_time"] = now
-    state["eye_closed"] = False
-    state["closed_frame_count"] = 0
+        state["eye_closed"] = False
+        state["closed_frame_count"] = 0
+    elif not state["eye_closed"]:
+        state["closed_frame_count"] = 0
     return blink_counted, "OPEN"
 
 
@@ -286,6 +294,7 @@ def main():
         "closed_frame_count": 0,
         "last_blink_time": 0.0,
         "ear_baseline": None,
+        "skip_frame_streak": 0,
     }
     rate_state = {
         "window_start_time": time.time(),
@@ -406,12 +415,14 @@ def main():
                         + EAR_BASELINE_ALPHA * avg_ear
                     )
                 blink_threshold = max(
+                    EAR_THRESHOLD,
                     MIN_DYNAMIC_EAR_THRESHOLD,
                     blink_state["ear_baseline"] * EAR_DYNAMIC_RATIO,
                 )
 
             # Blink detection only on valid (non-skipped) frames — alert uses real time, always
             if not frame_ignored:
+                blink_state["skip_frame_streak"] = 0
                 blink_counted, eye_state_text = detect_blink(
                     avg_ear,
                     blink_threshold,
@@ -423,9 +434,12 @@ def main():
                     total_blinks += 1
                     rate_state["blink_count_window"] += 1
             else:
-                blink_state["eye_closed"] = False
-                blink_state["closed_frame_count"] = 0
-                eye_state_text = "OPEN"
+                blink_state["skip_frame_streak"] += 1
+                # Keep short skip bursts from breaking a real blink mid-transition.
+                if blink_state["skip_frame_streak"] > MAX_SKIP_FRAMES_FOR_BLINK_HOLD:
+                    blink_state["eye_closed"] = False
+                    blink_state["closed_frame_count"] = 0
+                    eye_state_text = "OPEN"
 
             status_text, should_beep, cd_rem, low_duration_sec = check_alert(
                 current_time,
