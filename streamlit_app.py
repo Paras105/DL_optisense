@@ -255,6 +255,8 @@ class BlinkProcessor(VideoProcessorBase):
                     frame_ignored = True
                 else:
                     eyes_visible = eyes_big_enough and eyes_stable
+                    if not eyes_visible:
+                        frame_ignored = True
 
                 self.prev_face_center_x = face_center_x
                 self.prev_left_width = left_width
