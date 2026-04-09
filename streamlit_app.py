@@ -6,6 +6,7 @@ Run:
 import math
 import sys
 import time
+import types
 from typing import Optional
 
 import av  # pyright: ignore[reportMissingImports]
@@ -16,6 +17,13 @@ from streamlit_webrtc import VideoProcessorBase, webrtc_streamer  # pyright: ign
 
 MEDIAPIPE_AVAILABLE = True
 MEDIAPIPE_IMPORT_ERROR = ""
+
+# MediaPipe optional_dependencies tries importing tensorflow.tools.docs.
+# In this app, TensorFlow is not needed; a broken TF/protobuf combo can crash
+# MediaPipe import. Provide a non-package tensorflow stub so that import raises
+# ModuleNotFoundError (handled by MediaPipe) instead of hard-failing.
+if "tensorflow" not in sys.modules:
+    sys.modules["tensorflow"] = types.ModuleType("tensorflow")
 
 # In some reload/runtime paths, a previously stubbed mediapipe.tasks module can
 # linger in sys.modules and break fresh imports with:
