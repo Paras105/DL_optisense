@@ -4,6 +4,7 @@ Run:
     streamlit run streamlit_app.py
 """
 import math
+import sys
 import time
 from typing import Optional
 
@@ -15,6 +16,15 @@ from streamlit_webrtc import VideoProcessorBase, webrtc_streamer  # pyright: ign
 
 MEDIAPIPE_AVAILABLE = True
 MEDIAPIPE_IMPORT_ERROR = ""
+
+# In some reload/runtime paths, a previously stubbed mediapipe.tasks module can
+# linger in sys.modules and break fresh imports with:
+# "mediapipe.tasks.python is not a package". Clean only non-package stubs.
+for _mod in ("mediapipe.tasks.python", "mediapipe.tasks"):
+    _loaded = sys.modules.get(_mod)
+    if _loaded is not None and not hasattr(_loaded, "__path__"):
+        del sys.modules[_mod]
+
 try:
     from mediapipe.python.solutions import face_mesh as mp_face_mesh
 except Exception as exc:
