@@ -4,9 +4,7 @@ Run:
     streamlit run streamlit_app.py
 """
 import math
-import sys
 import time
-import types
 from typing import Optional
 
 import av  # pyright: ignore[reportMissingImports]
@@ -15,15 +13,14 @@ import streamlit as st
 from PIL import Image, ImageDraw
 from streamlit_webrtc import VideoProcessorBase, webrtc_streamer  # pyright: ignore[reportMissingImports]
 
-# Keep MediaPipe import path lightweight in constrained deploy environments.
-if "mediapipe.tasks.python" not in sys.modules:
-    _mp_tasks = types.ModuleType("mediapipe.tasks")
-    _mp_tasks_py = types.ModuleType("mediapipe.tasks.python")
-    setattr(_mp_tasks, "python", _mp_tasks_py)
-    sys.modules["mediapipe.tasks"] = _mp_tasks
-    sys.modules["mediapipe.tasks.python"] = _mp_tasks_py
-
-from mediapipe.python.solutions import face_mesh as mp_face_mesh
+MEDIAPIPE_AVAILABLE = True
+MEDIAPIPE_IMPORT_ERROR = ""
+try:
+    from mediapipe.python.solutions import face_mesh as mp_face_mesh
+except Exception as exc:
+    MEDIAPIPE_AVAILABLE = False
+    MEDIAPIPE_IMPORT_ERROR = str(exc)
+    mp_face_mesh = None
 
 EAR_THRESHOLD = 0.21
 CLOSED_FRAMES_REQUIRED = 2
@@ -171,13 +168,15 @@ def check_alert(current_time: float, blink_rate_per_min: float, alert_state):
 
 class BlinkProcessor(VideoProcessorBase):
     def __init__(self):
-        self.face_mesh = mp_face_mesh.FaceMesh(
-            static_image_mode=False,
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
-        )
+        self.face_mesh = None
+        if MEDIAPIPE_AVAILABLE and mp_face_mesh is not None:
+            self.face_mesh = mp_face_mesh.FaceMesh(
+                static_image_mode=False,
+                max_num_faces=1,
+                refine_landmarks=True,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5,
+            )
         self.blink_state = {
             "eye_closed": False,
             "closed_frame_count": 0,
@@ -204,6 +203,18 @@ class BlinkProcessor(VideoProcessorBase):
         img = np.ascontiguousarray(img[:, ::-1, :])
         h, w = img.shape[:2]
         now = time.time()
+        pil = Image.fromarray(img[:, :, ::-1])
+        draw = ImageDraw.Draw(pil)
+
+        # Keep the app running even if mediapipe import/runtime init fails in cloud.
+        if self.face_mesh is None:
+            draw.text((15, 25), "Mediapipe unavailable in this runtime.", fill=(255, 80, 80))
+            draw.text((15, 55), "Check deployment logs and requirements.", fill=(255, 180, 120))
+            if MEDIAPIPE_IMPORT_ERROR:
+                draw.text((15, 85), MEDIAPIPE_IMPORT_ERROR[:90], fill=(255, 180, 120))
+            pil = pil.resize((960, 540))
+            img = np.array(pil)[:, :, ::-1]
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
 
         update_blink_rate(now, self.rate_state)
         live_blink_rate = compute_live_blink_rate_per_min(now, self.rate_state)
@@ -214,9 +225,6 @@ class BlinkProcessor(VideoProcessorBase):
 
         frame_ignored = False
         eyes_visible = False
-
-        pil = Image.fromarray(img[:, :, ::-1])
-        draw = ImageDraw.Draw(pil)
 
         if face_list:
             face_landmarks = face_list[0]
@@ -335,6 +343,9 @@ st.set_page_config(page_title="Blink Rate Eye Strain Monitor", layout="centered"
 st.title("Blink Rate Eye Strain Monitor")
 st.caption("Real-time blink detection with EAR + MediaPipe Face Mesh")
 st.info("Allow webcam access. Blink naturally and keep face centered for best tracking.")
+if not MEDIAPIPE_AVAILABLE:
+    st.error("Mediapipe failed to import in this environment.")
+    st.code(MEDIAPIPE_IMPORT_ERROR or "Unknown import error")
 st.markdown(
     """
 <style>
