@@ -34,11 +34,15 @@ for _mod in ("mediapipe.tasks.python", "mediapipe.tasks"):
         del sys.modules[_mod]
 
 try:
-    from mediapipe.python.solutions import face_mesh as mp_face_mesh
+    import mediapipe as mp
+    mp_face_mesh = mp.solutions.face_mesh
 except Exception as exc:
-    MEDIAPIPE_AVAILABLE = False
-    MEDIAPIPE_IMPORT_ERROR = str(exc)
-    mp_face_mesh = None
+    try:
+        from mediapipe.python.solutions import face_mesh as mp_face_mesh
+    except Exception as exc_fallback:
+        MEDIAPIPE_AVAILABLE = False
+        MEDIAPIPE_IMPORT_ERROR = f"{exc} | fallback: {exc_fallback}"
+        mp_face_mesh = None
 
 EAR_THRESHOLD = 0.21
 CLOSED_FRAMES_REQUIRED = 2

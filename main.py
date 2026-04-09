@@ -15,16 +15,16 @@ from pathlib import Path
 
 import cv2
 
-# MediaPipe top-level import can pull tasks->tensorflow chain in some envs.
-# We only need solutions.face_mesh, so we stub tasks safely.
-if "mediapipe.tasks.python" not in sys.modules:
-    _mp_tasks = types.ModuleType("mediapipe.tasks")
-    _mp_tasks_py = types.ModuleType("mediapipe.tasks.python")
-    setattr(_mp_tasks, "python", _mp_tasks_py)
-    sys.modules["mediapipe.tasks"] = _mp_tasks
-    sys.modules["mediapipe.tasks.python"] = _mp_tasks_py
+# MediaPipe import compatibility across package variants:
+# prefer `mediapipe.solutions`, fallback to legacy `mediapipe.python.solutions`.
+if "tensorflow" not in sys.modules:
+    sys.modules["tensorflow"] = types.ModuleType("tensorflow")
 
-from mediapipe.python.solutions import face_mesh as mp_face_mesh
+try:
+    import mediapipe as mp
+    mp_face_mesh = mp.solutions.face_mesh  # pyright: ignore[reportAttributeAccessIssue]
+except Exception:
+    from mediapipe.python.solutions import face_mesh as mp_face_mesh  # pyright: ignore[reportAttributeAccessIssue]
 
 # -------------------------
 # Tunable config (easy edit)
