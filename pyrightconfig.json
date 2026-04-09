@@ -1,0 +1,10 @@
+{
+  "extraPaths": [
+    "C:\\Users\\hp\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages"
+  ],
+  "executionEnvironments": [
+    {
+      "root": "."
+    }
+  ]
+}

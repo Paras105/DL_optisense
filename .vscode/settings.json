@@ -1,0 +1,9 @@
+{
+  "python.defaultInterpreterPath": "C:\\Users\\hp\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+  "python.analysis.extraPaths": [
+    "C:\\Users\\hp\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages"
+  ],
+  "basedpyright.analysis.extraPaths": [
+    "C:\\Users\\hp\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages"
+  ]
+}

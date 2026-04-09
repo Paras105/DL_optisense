@@ -1,0 +1,11 @@
+opencv-python
+mediapipe==0.10.13
+numpy
+streamlit
+streamlit-webrtc
+av
+tensorflow
+keras
+matplotlib
+scikit-learn
+seaborn
