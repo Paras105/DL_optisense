@@ -4,6 +4,7 @@ Run:
     streamlit run streamlit_app.py
 """
 import math
+import importlib
 import time
 from typing import Optional
 
@@ -18,12 +19,15 @@ MEDIAPIPE_IMPORT_ERROR = ""
 
 try:
     import mediapipe as mp
-    mp_face_mesh = getattr(getattr(mp, "solutions", None), "face_mesh", None)
+    _solutions = getattr(mp, "solutions", None)
+    if _solutions is None:
+        _solutions = importlib.import_module("mediapipe.solutions")
+    mp_face_mesh = getattr(_solutions, "face_mesh", None)
     if mp_face_mesh is None:
-        from mediapipe.python.solutions import face_mesh as mp_face_mesh  # pyright: ignore[reportMissingImports]
+        raise ImportError("mediapipe.solutions.face_mesh is unavailable")
 except Exception as exc:
     MEDIAPIPE_AVAILABLE = False
-    MEDIAPIPE_IMPORT_ERROR = str(exc)
+    MEDIAPIPE_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
     mp_face_mesh = None
 
 EAR_THRESHOLD = 0.21
