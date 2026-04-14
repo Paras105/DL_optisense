@@ -4,9 +4,7 @@ Run:
     streamlit run streamlit_app.py
 """
 import math
-import sys
 import time
-import types
 from typing import Optional
 
 import av  # pyright: ignore[reportMissingImports]
@@ -18,31 +16,15 @@ from streamlit_webrtc import VideoProcessorBase, webrtc_streamer  # pyright: ign
 MEDIAPIPE_AVAILABLE = True
 MEDIAPIPE_IMPORT_ERROR = ""
 
-# MediaPipe optional_dependencies tries importing tensorflow.tools.docs.
-# In this app, TensorFlow is not needed; a broken TF/protobuf combo can crash
-# MediaPipe import. Provide a non-package tensorflow stub so that import raises
-# ModuleNotFoundError (handled by MediaPipe) instead of hard-failing.
-if "tensorflow" not in sys.modules:
-    sys.modules["tensorflow"] = types.ModuleType("tensorflow")
-
-# In some reload/runtime paths, a previously stubbed mediapipe.tasks module can
-# linger in sys.modules and break fresh imports with:
-# "mediapipe.tasks.python is not a package". Clean only non-package stubs.
-for _mod in ("mediapipe.tasks.python", "mediapipe.tasks"):
-    _loaded = sys.modules.get(_mod)
-    if _loaded is not None and not hasattr(_loaded, "__path__"):
-        del sys.modules[_mod]
-
 try:
     import mediapipe as mp
-    mp_face_mesh = mp.solutions.face_mesh
+    mp_face_mesh = getattr(getattr(mp, "solutions", None), "face_mesh", None)
+    if mp_face_mesh is None:
+        from mediapipe.python.solutions import face_mesh as mp_face_mesh  # pyright: ignore[reportMissingImports]
 except Exception as exc:
-    try:
-        from mediapipe.python.solutions import face_mesh as mp_face_mesh
-    except Exception as exc_fallback:
-        MEDIAPIPE_AVAILABLE = False
-        MEDIAPIPE_IMPORT_ERROR = f"{exc} | fallback: {exc_fallback}"
-        mp_face_mesh = None
+    MEDIAPIPE_AVAILABLE = False
+    MEDIAPIPE_IMPORT_ERROR = str(exc)
+    mp_face_mesh = None
 
 EAR_THRESHOLD = 0.21
 CLOSED_FRAMES_REQUIRED = 2
@@ -352,8 +334,10 @@ class BlinkProcessor(VideoProcessorBase):
         ]
         y = 30
         for t in lines:
+            draw.rectangle((8, y - 5, 365, y + 17), fill=(0, 0, 0))
             draw.text((15, y), t, fill=(255, 255, 0))
             y += 26
+        draw.rectangle((8, y + 1, 430, y + 23), fill=(0, 0, 0))
         draw.text((15, y + 6), status_text + suffix, fill=(255, 80, 80) if status_text == STATUS_ALERT else (80, 255, 80))
 
         pil = pil.resize((960, 540))
@@ -371,7 +355,17 @@ if not MEDIAPIPE_AVAILABLE:
 st.markdown(
     """
 <style>
-    .block-container {max-width: 1000px; padding-top: 1rem; padding-bottom: 1rem;}
+    .block-container {
+        max-width: 1100px;
+        padding-top: 1rem;
+        padding-bottom: 2rem;
+    }
+    [data-testid="stAppViewContainer"], .main {
+        overflow-y: auto !important;
+    }
+    [data-testid="stVerticalBlock"] {
+        gap: 0.6rem;
+    }
 </style>
 """,
     unsafe_allow_html=True,
